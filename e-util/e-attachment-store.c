@@ -28,6 +28,7 @@
 
 #include <errno.h>
 #include <glib/gi18n.h>
+#include <gnome-autoar/autoar.h>
 
 #include "e-mktemp.h"
 
@@ -522,6 +523,20 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 	GtkFileChooser *file_chooser;
 	GtkFileChooserAction action;
 	GtkWidget *dialog;
+
+	GtkBox *extra_box;
+	GtkWidget *extra_box_widget;
+
+	GtkBox *extract_box;
+	GtkWidget *extract_box_widget;
+
+	GSList *extract_group;
+	GtkWidget *extract_only, *extract_org;
+	GtkToggleButton *extract_only_toggle;
+
+	GtkWidget *extract_yes;
+	GtkToggleButton *extract_yes_toggle;
+
 	GFile *destination;
 	const gchar *title;
 	gint response;
@@ -552,10 +567,42 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 	gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
 	gtk_window_set_icon_name (GTK_WINDOW (dialog), "mail-attachment");
 
+	extra_box_widget = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	extra_box = GTK_BOX (extra_box_widget);
+
+	extract_yes = gtk_check_button_new_with_mnemonic (
+		_("E_xtract files from the attachment if it is an archive"));
+	extract_yes_toggle = GTK_TOGGLE_BUTTON (extract_yes);
+	gtk_box_pack_start (extra_box, extract_yes, FALSE, FALSE, 0);
+
+	extract_box_widget = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	extract_box = GTK_BOX (extract_box_widget);
+	gtk_box_pack_start (extra_box, extract_box_widget, FALSE, FALSE, 5);
+
+	extract_only = gtk_radio_button_new_with_mnemonic (NULL,
+		_("Save extracted files only"));
+	extract_only_toggle = GTK_TOGGLE_BUTTON (extract_only);
+	extract_group = gtk_radio_button_get_group (GTK_RADIO_BUTTON (extract_only));
+	gtk_box_pack_start (extract_box, extract_only, FALSE, FALSE, 0);
+
+	extract_org = gtk_radio_button_new_with_mnemonic (extract_group,
+		_("Save extracted files and the original archive"));
+	gtk_box_pack_start (extract_box, extract_org, FALSE, FALSE, 0);
+
+	g_object_bind_property (extract_yes, "active", extract_box, "visible", 0);
+	gtk_toggle_button_set_active (extract_yes_toggle, TRUE);
+	gtk_toggle_button_set_active (extract_only_toggle, TRUE);
+
+	gtk_widget_show_all (extra_box_widget);
+	gtk_file_chooser_set_extra_widget (file_chooser, extra_box_widget);
+
 	if (action == GTK_FILE_CHOOSER_ACTION_SAVE) {
 		EAttachment *attachment;
+		AutoarPref *arpref;
+		GSettings *settings;
 		GFileInfo *file_info;
 		const gchar *name = NULL;
+		gchar *mime_type;
 
 		attachment = attachment_list->data;
 		file_info = e_attachment_ref_file_info (attachment);
@@ -569,15 +616,38 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 
 		gtk_file_chooser_set_current_name (file_chooser, name);
 
+		mime_type = e_attachment_dup_mime_type (attachment);
+		settings = g_settings_new (AUTOAR_PREF_DEFAULT_GSCHEMA_ID);
+		arpref = autoar_pref_new_with_gsettings (settings);
+		if (!autoar_pref_check_file_name (arpref, name) &&
+		    !autoar_pref_check_mime_type_d (arpref, mime_type)) {
+			gtk_toggle_button_set_active (extract_yes_toggle, FALSE);
+		}
+
 		g_clear_object (&file_info);
+		g_clear_object (&settings);
+		g_clear_object (&arpref);
+		g_free (mime_type);
 	}
 
 	response = gtk_dialog_run (GTK_DIALOG (dialog));
 
-	if (response == GTK_RESPONSE_OK)
+	if (response == GTK_RESPONSE_OK) {
+		GList *iter;
+		gboolean save_self, save_extracted;
+
 		destination = gtk_file_chooser_get_file (file_chooser);
-	else
+		save_self = !gtk_toggle_button_get_active (extract_yes_toggle) ||
+			    !gtk_toggle_button_get_active (extract_only_toggle);
+		save_extracted = gtk_toggle_button_get_active (extract_yes_toggle);
+
+		for (iter = attachment_list; iter != NULL; iter = iter->next) {
+			e_attachment_set_save_self (iter->data, save_self);
+			e_attachment_set_save_extracted (iter->data, save_extracted);
+		}
+	} else {
 		destination = NULL;
+	}
 
 	gtk_widget_destroy (dialog);
 
