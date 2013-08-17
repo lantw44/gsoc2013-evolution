@@ -287,7 +287,8 @@ PKG_CHECK_MODULES([GNOME_PLATFORM],
 	 shared-mime-info >= shared_mime_info_minimum_version
 	 gnome-desktop-3.0 >= gnome_desktop_minimum_version
 	 gsettings-desktop-schemas >= gsettings_desktop_schemas_minimum_version
-	 webkitgtk-3.0 >= webkitgtk_minimum_version])
+	 webkitgtk-3.0 >= webkitgtk_minimum_version
+	 gnome-autoar])
 AC_SUBST(GNOME_PLATFORM_CFLAGS)
 AC_SUBST(GNOME_PLATFORM_LIBS)
 
