@@ -74,6 +74,9 @@ struct _EAttachmentPrivate {
 	guint saving   : 1;
 	guint shown    : 1;
 
+	guint save_self      : 1;
+	guint save_extracted : 1;
+
 	camel_cipher_validity_encrypt_t encrypted;
 	camel_cipher_validity_sign_t signed_;
 
@@ -103,6 +106,8 @@ enum {
 	PROP_MIME_PART,
 	PROP_PERCENT,
 	PROP_REFERENCE,
+	PROP_SAVE_SELF,
+	PROP_SAVE_EXTRACTED,
 	PROP_SAVING,
 	PROP_SHOWN,
 	PROP_SIGNED
@@ -665,6 +670,18 @@ attachment_set_property (GObject *object,
 				E_ATTACHMENT (object),
 				g_value_get_int (value));
 			return;
+
+		case PROP_SAVE_SELF:
+			e_attachment_set_save_self (
+				E_ATTACHMENT (object),
+				g_value_get_boolean (value));
+			return;
+
+		case PROP_SAVE_EXTRACTED:
+			e_attachment_set_save_extracted (
+				E_ATTACHMENT (object),
+				g_value_get_boolean (value));
+			return;
 	}
 
 	G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
@@ -751,6 +768,20 @@ attachment_get_property (GObject *object,
 			g_value_set_boxed (
 				value,
 				e_attachment_get_reference (
+				E_ATTACHMENT (object)));
+			return;
+
+		case PROP_SAVE_SELF:
+			g_value_set_boolean (
+				value,
+				e_attachment_get_save_self (
+				E_ATTACHMENT (object)));
+			return;
+
+		case PROP_SAVE_EXTRACTED:
+			g_value_set_boolean (
+				value,
+				e_attachment_get_save_extracted (
 				E_ATTACHMENT (object)));
 			return;
 
@@ -943,6 +974,26 @@ e_attachment_class_init (EAttachmentClass *class)
 			"Reference",
 			NULL,
 			GTK_TYPE_TREE_ROW_REFERENCE,
+			G_PARAM_READWRITE));
+
+	g_object_class_install_property (
+		object_class,
+		PROP_SAVE_SELF,
+		g_param_spec_boolean (
+			"save-self",
+			"Save self",
+			NULL,
+			TRUE,
+			G_PARAM_READWRITE));
+
+	g_object_class_install_property (
+		object_class,
+		PROP_SAVE_EXTRACTED,
+		g_param_spec_boolean (
+			"save-extracted",
+			"Save extracted",
+			NULL,
+			FALSE,
 			G_PARAM_READWRITE));
 
 	g_object_class_install_property (
@@ -1518,6 +1569,40 @@ e_attachment_set_shown (EAttachment *attachment,
 	attachment->priv->shown = shown;
 
 	g_object_notify (G_OBJECT (attachment), "shown");
+}
+
+gboolean
+e_attachment_get_save_self (EAttachment *attachment)
+{
+	g_return_val_if_fail (E_IS_ATTACHMENT (attachment), TRUE);
+
+	return attachment->priv->save_self;
+}
+
+void
+e_attachment_set_save_self (EAttachment *attachment,
+                            gboolean save_self)
+{
+	g_return_if_fail (E_IS_ATTACHMENT (attachment));
+
+	attachment->priv->save_self = save_self;
+}
+
+gboolean
+e_attachment_get_save_extracted (EAttachment *attachment)
+{
+	g_return_val_if_fail (E_IS_ATTACHMENT (attachment), FALSE);
+
+	return attachment->priv->save_extracted;
+}
+
+void
+e_attachment_set_save_extracted (EAttachment *attachment,
+                                 gboolean save_extracted)
+{
+	g_return_if_fail (E_IS_ATTACHMENT (attachment));
+
+	attachment->priv->save_extracted = save_extracted;
 }
 
 camel_cipher_validity_encrypt_t
