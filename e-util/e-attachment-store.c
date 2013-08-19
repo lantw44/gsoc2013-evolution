@@ -633,7 +633,6 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 	response = gtk_dialog_run (GTK_DIALOG (dialog));
 
 	if (response == GTK_RESPONSE_OK) {
-		GList *iter;
 		gboolean save_self, save_extracted;
 
 		destination = gtk_file_chooser_get_file (file_chooser);
@@ -641,9 +640,44 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 			    !gtk_toggle_button_get_active (extract_only_toggle);
 		save_extracted = gtk_toggle_button_get_active (extract_yes_toggle);
 
-		for (iter = attachment_list; iter != NULL; iter = iter->next) {
-			e_attachment_set_save_self (iter->data, save_self);
-			e_attachment_set_save_extracted (iter->data, save_extracted);
+		if (action == GTK_FILE_CHOOSER_ACTION_SAVE) {
+			e_attachment_set_save_self (attachment_list->data, save_self);
+			e_attachment_set_save_extracted (attachment_list->data, save_extracted);
+		} else {
+			AutoarPref *arpref;
+			GSettings *settings;
+			GList *iter;
+
+			settings = g_settings_new (AUTOAR_PREF_DEFAULT_GSCHEMA_ID);
+			arpref = autoar_pref_new_with_gsettings (settings);
+
+			for (iter = attachment_list; iter != NULL; iter = iter->next) {
+				EAttachment *attachment;
+				GFileInfo *file_info;
+				const gchar *name;
+				gchar *mime_type;
+
+				attachment = iter->data;
+				file_info = e_attachment_ref_file_info (attachment);
+				name = g_file_info_get_display_name (file_info);
+				mime_type = e_attachment_dup_mime_type (attachment);
+
+				if ((name != NULL &&
+				    autoar_pref_check_file_name (arpref, name)) ||
+				    autoar_pref_check_mime_type_d (arpref, mime_type)) {
+					e_attachment_set_save_self (attachment, save_self);
+					e_attachment_set_save_extracted (attachment, save_extracted);
+				} else {
+					e_attachment_set_save_self (attachment, TRUE);
+					e_attachment_set_save_extracted (attachment, FALSE);
+				}
+
+				g_object_unref (file_info);
+				g_free (mime_type);
+			}
+
+			g_object_unref (settings);
+			g_object_unref (arpref);
 		}
 	} else {
 		destination = NULL;
