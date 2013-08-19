@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <glib/gi18n.h>
 #include <glib/gstdio.h>
+#include <gnome-autoar/autoar.h>
 
 #include <libedataserver/libedataserver.h>
 
@@ -2709,6 +2710,16 @@ struct _SaveContext {
 	gssize bytes_read;
 	gchar buffer[4096];
 	gint count;
+
+	GByteArray *input_buffer;
+	char *suggested_destname;
+
+	guint total_tasks : 2;
+	guint completed_tasks : 2;
+	guint prepared_tasks : 2;
+
+	GMutex completed_tasks_mutex;
+	GMutex prepared_tasks_mutex;
 };
 
 /* Forward Declaration */
@@ -2733,6 +2744,9 @@ attachment_save_context_new (EAttachment *attachment,
 	save_context->attachment = g_object_ref (attachment);
 	save_context->simple = simple;
 
+	g_mutex_init (&(save_context->completed_tasks_mutex));
+	g_mutex_init (&(save_context->prepared_tasks_mutex));
+
 	attachment_set_saving (save_context->attachment, TRUE);
 
 	return save_context;
@@ -2756,6 +2770,15 @@ attachment_save_context_free (SaveContext *save_context)
 	if (save_context->output_stream != NULL)
 		g_object_unref (save_context->output_stream);
 
+	if (save_context->input_buffer != NULL)
+		g_byte_array_unref (save_context->input_buffer);
+
+	if (save_context->suggested_destname != NULL)
+		g_free (save_context->suggested_destname);
+
+	g_mutex_clear (&(save_context->completed_tasks_mutex));
+	g_mutex_clear (&(save_context->prepared_tasks_mutex));
+
 	g_slice_free (SaveContext, save_context);
 }
 
@@ -2770,11 +2793,44 @@ attachment_save_check_for_error (SaveContext *save_context,
 
 	simple = save_context->simple;
 	g_simple_async_result_take_error (simple, error);
-	g_simple_async_result_complete (simple);
 
-	attachment_save_context_free (save_context);
+	g_mutex_lock (&(save_context->completed_tasks_mutex));
+	if (++save_context->completed_tasks >= save_context->total_tasks) {
+		g_simple_async_result_complete (simple);
+		g_mutex_unlock (&(save_context->completed_tasks_mutex));
+		attachment_save_context_free (save_context);
+	} else {
+		g_mutex_unlock (&(save_context->completed_tasks_mutex));
+	}
 
 	return TRUE;
+}
+
+static void
+attachment_save_complete (SaveContext *save_context) {
+	g_mutex_lock (&(save_context->completed_tasks_mutex));
+	if (++save_context->completed_tasks >= save_context->total_tasks) {
+		GSimpleAsyncResult *simple;
+		GFile *result;
+
+		/* Steal the destination. */
+		result = save_context->destination;
+		save_context->destination = NULL;
+
+		if (result == NULL) {
+			result = save_context->directory;
+			save_context->directory = NULL;
+		}
+
+		simple = save_context->simple;
+		g_simple_async_result_set_op_res_gpointer (
+			simple, result, (GDestroyNotify) g_object_unref);
+		g_simple_async_result_complete (simple);
+		g_mutex_unlock (&(save_context->completed_tasks_mutex));
+		attachment_save_context_free (save_context);
+	} else {
+		g_mutex_unlock (&(save_context->completed_tasks_mutex));
+	}
 }
 
 static GFile *
@@ -2891,20 +2947,7 @@ attachment_save_read_cb (GInputStream *input_stream,
 		return;
 
 	if (bytes_read == 0) {
-		GSimpleAsyncResult *simple;
-		GFile *destination;
-
-		/* Steal the destination. */
-		destination = save_context->destination;
-		save_context->destination = NULL;
-
-		simple = save_context->simple;
-		g_simple_async_result_set_op_res_gpointer (
-			simple, destination, (GDestroyNotify) g_object_unref);
-		g_simple_async_result_complete (simple);
-
-		attachment_save_context_free (save_context);
-
+		attachment_save_complete (save_context);
 		return;
 	}
 
@@ -2924,6 +2967,44 @@ attachment_save_read_cb (GInputStream *input_stream,
 		G_PRIORITY_DEFAULT, cancellable,
 		(GAsyncReadyCallback) attachment_save_write_cb,
 		save_context);
+}
+
+static void
+attachment_save_extracted_progress_cb (AutoarExtract *arextract,
+                                       gdouble fraction_size,
+                                       gdouble fraction_files,
+                                       SaveContext *save_context)
+{
+	attachment_progress_cb (
+		autoar_extract_get_completed_size (arextract),
+		autoar_extract_get_size (arextract),
+		save_context->attachment);
+}
+
+static void
+attachment_save_extracted_cancelled_cb (AutoarExtract *arextract,
+                                        SaveContext *save_context)
+{
+	attachment_save_check_for_error (save_context,
+		g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, ""));
+	g_object_unref (arextract);
+}
+
+static void
+attachment_save_extracted_completed_cb (AutoarExtract *arextract,
+                                        SaveContext *save_context)
+{
+	attachment_save_complete (save_context);
+	g_object_unref (arextract);
+}
+
+static void
+attachment_save_extracted_error_cb (AutoarExtract *arextract,
+                                    GError *error,
+                                    SaveContext *save_context)
+{
+	attachment_save_check_for_error (save_context, g_error_copy (error));
+	g_object_unref (arextract);
 }
 
 static void
@@ -2951,25 +3032,65 @@ attachment_save_got_output_stream (SaveContext *save_context)
 	camel_data_wrapper_decode_to_stream_sync (wrapper, stream, NULL, NULL);
 	g_object_unref (stream);
 
-	/* Load the buffer into a GMemoryInputStream.
-	 * But watch out for zero length MIME parts. */
-	input_stream = g_memory_input_stream_new ();
-	if (buffer->len > 0)
-		g_memory_input_stream_add_data (
-			G_MEMORY_INPUT_STREAM (input_stream),
-			buffer->data, (gssize) buffer->len,
-			(GDestroyNotify) g_free);
-	save_context->input_stream = input_stream;
-	save_context->total_num_bytes = (goffset) buffer->len;
-	g_byte_array_free (buffer, FALSE);
+	save_context->input_buffer = buffer;
 
-	g_input_stream_read_async (
-		input_stream,
-		save_context->buffer,
-		sizeof (save_context->buffer),
-		G_PRIORITY_DEFAULT, cancellable,
-		(GAsyncReadyCallback) attachment_save_read_cb,
-		save_context);
+	if (attachment->priv->save_self) {
+		/* Load the buffer into a GMemoryInputStream.
+		 * But watch out for zero length MIME parts. */
+		input_stream = g_memory_input_stream_new ();
+		if (buffer->len > 0)
+			g_memory_input_stream_add_data (
+				G_MEMORY_INPUT_STREAM (input_stream),
+				buffer->data, (gssize) buffer->len, NULL);
+		save_context->input_stream = input_stream;
+		save_context->total_num_bytes = (goffset) buffer->len;
+
+		g_input_stream_read_async (
+			input_stream,
+			save_context->buffer,
+			sizeof (save_context->buffer),
+			G_PRIORITY_DEFAULT, cancellable,
+			(GAsyncReadyCallback) attachment_save_read_cb,
+			save_context);
+	}
+
+	if (attachment->priv->save_extracted) {
+		GSettings *settings;
+		AutoarPref *arpref;
+		AutoarExtract *arextract;
+
+		settings = g_settings_new (AUTOAR_PREF_DEFAULT_GSCHEMA_ID);
+		arpref = autoar_pref_new_with_gsettings (settings);
+		autoar_pref_set_delete_if_succeed (arpref, FALSE);
+
+		arextract = autoar_extract_new_memory_file (
+			buffer->data, buffer->len,
+			save_context->suggested_destname,
+			save_context->directory, arpref);
+
+		g_signal_connect (arextract, "progress",
+			G_CALLBACK (attachment_save_extracted_progress_cb),
+			save_context);
+		g_signal_connect (arextract, "cancelled",
+			G_CALLBACK (attachment_save_extracted_cancelled_cb),
+			save_context);
+		g_signal_connect (arextract, "error",
+			G_CALLBACK (attachment_save_extracted_error_cb),
+			save_context);
+		g_signal_connect (arextract, "completed",
+			G_CALLBACK (attachment_save_extracted_completed_cb),
+			save_context);
+
+		autoar_extract_start_async (arextract, cancellable);
+
+		g_object_unref (settings);
+		g_object_unref (arpref);
+
+		/* We do not g_object_unref (arextract); here because
+		 * autoar_extract_run_start_async () do not increase the
+		 * reference count of arextract. We unref the object in
+		 * callbacks instead. */
+	}
 
 	g_clear_object (&mime_part);
 }
@@ -3009,7 +3130,11 @@ attachment_save_create_cb (GFile *destination,
 		return;
 
 	save_context->destination = g_object_ref (destination);
-	attachment_save_got_output_stream (save_context);
+
+	g_mutex_lock (&(save_context->prepared_tasks_mutex));
+	if (++save_context->prepared_tasks >= save_context->total_tasks)
+		attachment_save_got_output_stream (save_context);
+	g_mutex_unlock (&(save_context->prepared_tasks_mutex));
 }
 
 static void
@@ -3028,7 +3153,11 @@ attachment_save_replace_cb (GFile *destination,
 		return;
 
 	save_context->destination = g_object_ref (destination);
-	attachment_save_got_output_stream (save_context);
+
+	g_mutex_lock (&(save_context->prepared_tasks_mutex));
+	if (++save_context->prepared_tasks >= save_context->total_tasks)
+		attachment_save_got_output_stream (save_context);
+	g_mutex_unlock (&(save_context->prepared_tasks_mutex));
 }
 
 static void
@@ -3061,26 +3190,70 @@ attachment_save_query_info_cb (GFile *destination,
 
 	if (file_type == G_FILE_TYPE_DIRECTORY) {
 		save_context->directory = g_object_ref (destination);
-		destination = attachment_save_new_candidate (save_context);
 
-		g_file_create_async (
-			destination, G_FILE_CREATE_NONE,
-			G_PRIORITY_DEFAULT, cancellable,
-			(GAsyncReadyCallback) attachment_save_create_cb,
-			save_context);
+		if (attachment->priv->save_self) {
+			destination = attachment_save_new_candidate (save_context);
 
-		g_object_unref (destination);
+			g_file_create_async (
+				destination, G_FILE_CREATE_NONE,
+				G_PRIORITY_DEFAULT, cancellable,
+				(GAsyncReadyCallback) attachment_save_create_cb,
+				save_context);
+
+			g_object_unref (destination);
+		}
+
+		if (attachment->priv->save_extracted) {
+			EAttachment *attachment;
+			GFileInfo *info;
+			char *suggested;
+
+			attachment = save_context->attachment;
+			info = e_attachment_ref_file_info (attachment);
+			if (info != NULL)
+				suggested = g_strdup (
+					g_file_info_get_display_name (info));
+			if (suggested == NULL)
+				suggested = g_strdup (_("attachment.dat"));
+
+			save_context->suggested_destname = suggested;
+
+			g_mutex_lock (&(save_context->prepared_tasks_mutex));
+			if (++save_context->prepared_tasks >= save_context->total_tasks)
+				attachment_save_got_output_stream (save_context);
+			g_mutex_unlock (&(save_context->prepared_tasks_mutex));
+		}
 
 		return;
 	}
 
 replace:
-	g_file_replace_async (
-		destination, NULL, FALSE,
-		G_FILE_CREATE_REPLACE_DESTINATION,
-		G_PRIORITY_DEFAULT, cancellable,
-		(GAsyncReadyCallback) attachment_save_replace_cb,
-		save_context);
+	if (attachment->priv->save_self) {
+		g_file_replace_async (
+			destination, NULL, FALSE,
+			G_FILE_CREATE_REPLACE_DESTINATION,
+			G_PRIORITY_DEFAULT, cancellable,
+			(GAsyncReadyCallback) attachment_save_replace_cb,
+			save_context);
+	}
+
+	if (attachment->priv->save_extracted) {
+		/* We can safely use save_context->directory here because
+		 * attachment_save_replace_cb never calls
+		 * attachment_save_new_candidate, the only function using
+		 * the value of save_context->directory. */
+
+		save_context->suggested_destname =
+			g_file_get_basename (destination);
+		save_context->directory = g_file_get_parent (destination);
+		if (save_context->directory == NULL)
+			save_context->directory = g_object_ref (destination);
+
+		g_mutex_lock (&(save_context->prepared_tasks_mutex));
+		if (++save_context->prepared_tasks >= save_context->total_tasks)
+			attachment_save_got_output_stream (save_context);
+		g_mutex_unlock (&(save_context->prepared_tasks_mutex));
+	}
 }
 
 void
@@ -3122,6 +3295,11 @@ e_attachment_save_async (EAttachment *attachment,
 
 	save_context = attachment_save_context_new (
 		attachment, callback, user_data);
+
+	if (attachment->priv->save_self)
+		save_context->total_tasks++;
+	if (attachment->priv->save_extracted)
+		save_context->total_tasks++;
 
 	cancellable = attachment->priv->cancellable;
 	g_cancellable_reset (cancellable);
