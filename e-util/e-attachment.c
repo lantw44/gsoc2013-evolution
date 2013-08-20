@@ -3209,6 +3209,7 @@ attachment_save_query_info_cb (GFile *destination,
 			char *suggested;
 
 			attachment = save_context->attachment;
+			suggested = NULL;
 			info = e_attachment_ref_file_info (attachment);
 			if (info != NULL)
 				suggested = g_strdup (
