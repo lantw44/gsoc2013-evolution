@@ -3387,6 +3387,10 @@ e_attachment_save_async (EAttachment *attachment,
 	save_context = attachment_save_context_new (
 		attachment, callback, user_data);
 
+	/* No task is not allowed. */
+	if (!attachment->priv->save_self && !attachment->priv->save_extracted)
+		attachment->priv->save_self = TRUE;
+
 	if (attachment->priv->save_self)
 		save_context->total_tasks++;
 	if (attachment->priv->save_extracted)
