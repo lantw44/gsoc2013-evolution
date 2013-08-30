@@ -208,6 +208,38 @@ attachment_get_default_charset (void)
 	return charset;
 }
 
+static GFile*
+attachment_get_temporary (GError **error)
+{
+	gchar *template;
+	gchar *path;
+	GFile *temp_directory;
+
+	errno = 0;
+
+	/* Save the file to a temporary directory.
+	 * We use a directory so the files can retain their basenames.
+	 * XXX This could trigger a blocking temp directory cleanup. */
+	template = g_strdup_printf (PACKAGE "-%s-XXXXXX", g_get_user_name ());
+	path = e_mkdtemp (template);
+	g_free (template);
+
+	/* XXX Let's hope errno got set properly. */
+	if (path == NULL) {
+		g_set_error (
+			error, G_FILE_ERROR,
+			g_file_error_from_errno (errno),
+			"%s", g_strerror (errno));
+		return NULL;
+	}
+
+	temp_directory = g_file_new_for_path (path);
+	g_free (path);
+
+	return temp_directory;
+}
+
+
 static gboolean
 attachment_update_file_info_columns_idle_cb (gpointer weak_ref)
 {
@@ -1781,6 +1813,10 @@ static void
 attachment_load_stream_read_cb (GInputStream *input_stream,
                                 GAsyncResult *result,
                                 LoadContext *load_context);
+static void
+attachment_load_query_info_cb (GFile *file,
+                               GAsyncResult *result,
+                               LoadContext *load_context);
 
 static LoadContext *
 attachment_load_context_new (EAttachment *attachment,
@@ -2043,6 +2079,56 @@ attachment_load_file_read_cb (GFile *file,
 }
 
 static void
+attachment_load_created_decide_dest_cb (AutoarCreate *arcreate,
+                                        GFile *destination,
+                                        EAttachment *attachment)
+{
+	e_attachment_set_file (attachment, destination);
+}
+
+static void
+attachment_load_created_cancelled_cb (AutoarCreate *arcreate,
+                                      LoadContext *load_context)
+{
+	attachment_load_check_for_error (load_context,
+		g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, ""));
+	g_object_unref (arcreate);
+}
+
+static void
+attachment_load_created_completed_cb (AutoarCreate *arcreate,
+                                      LoadContext *load_context)
+{
+	EAttachment *attachment;
+	GFile *file;
+
+	g_object_unref (arcreate);
+
+	/* We have set the file to the created temporary archive, so we can
+	 * query info again and use the regular procedure to load the
+	 * attachment. */
+	attachment = load_context->attachment;
+	file = e_attachment_ref_file (attachment);
+	g_file_query_info_async (
+		file, ATTACHMENT_QUERY,
+		G_FILE_QUERY_INFO_NONE, G_PRIORITY_DEFAULT,
+		attachment->priv->cancellable, (GAsyncReadyCallback)
+		attachment_load_query_info_cb, load_context);
+
+	g_clear_object (&file);
+}
+
+static void
+attachment_load_created_error_cb (AutoarCreate *arcreate,
+                                  GError *error,
+                                  LoadContext *load_context)
+{
+	attachment_load_check_for_error (load_context, g_error_copy (error));
+	g_object_unref (arcreate);
+}
+
+
+static void
 attachment_load_query_info_cb (GFile *file,
                                GAsyncResult *result,
                                LoadContext *load_context)
@@ -2064,10 +2150,33 @@ attachment_load_query_info_cb (GFile *file,
 
 	load_context->total_num_bytes = g_file_info_get_size (file_info);
 
-	g_file_read_async (
-		file, G_PRIORITY_DEFAULT,
-		cancellable, (GAsyncReadyCallback)
-		attachment_load_file_read_cb, load_context);
+	if (g_file_info_get_file_type (file_info) == G_FILE_TYPE_DIRECTORY) {
+		AutoarCreate *arcreate;
+		AutoarPref *arpref; /* Do not unref */
+		GFile *temporary;
+
+		arpref = g_object_get_data (G_OBJECT (attachment), "autoar-pref");
+		temporary = attachment_get_temporary (&error);
+		if (attachment_load_check_for_error (load_context, error))
+			return;
+		arcreate = autoar_create_new_file (arpref, temporary, file, NULL);
+		g_signal_connect (arcreate, "decide-dest",
+			G_CALLBACK (attachment_load_created_decide_dest_cb), attachment);
+		g_signal_connect (arcreate, "cancelled",
+			G_CALLBACK (attachment_load_created_cancelled_cb), load_context);
+		g_signal_connect (arcreate, "completed",
+			G_CALLBACK (attachment_load_created_completed_cb), load_context);
+		g_signal_connect (arcreate, "error",
+			G_CALLBACK (attachment_load_created_error_cb), load_context);
+		autoar_create_start_async (arcreate, cancellable);
+
+		g_object_unref (temporary);
+	} else {
+		g_file_read_async (
+			file, G_PRIORITY_DEFAULT,
+			cancellable, (GAsyncReadyCallback)
+			attachment_load_file_read_cb, load_context);
+	}
 }
 
 #define ATTACHMENT_LOAD_CONTEXT "attachment-load-context-data"
@@ -2530,31 +2639,13 @@ static void
 attachment_open_save_temporary (OpenContext *open_context)
 {
 	GFile *temp_directory;
-	gchar *template;
-	gchar *path;
 	GError *error = NULL;
 
-	errno = 0;
-
-	/* Save the file to a temporary directory.
-	 * We use a directory so the files can retain their basenames.
-	 * XXX This could trigger a blocking temp directory cleanup. */
-	template = g_strdup_printf (PACKAGE "-%s-XXXXXX", g_get_user_name ());
-	path = e_mkdtemp (template);
-	g_free (template);
-
-	/* XXX Let's hope errno got set properly. */
-	if (path == NULL)
-		g_set_error (
-			&error, G_FILE_ERROR,
-			g_file_error_from_errno (errno),
-			"%s", g_strerror (errno));
+	temp_directory = attachment_get_temporary (&error);
 
 	/* We already know if there's an error, but this does the cleanup. */
 	if (attachment_open_check_for_error (open_context, error))
 		return;
-
-	temp_directory = g_file_new_for_path (path);
 
 	e_attachment_save_async (
 		open_context->attachment,
@@ -2562,7 +2653,6 @@ attachment_open_save_temporary (OpenContext *open_context)
 		attachment_open_save_finished_cb, open_context);
 
 	g_object_unref (temp_directory);
-	g_free (path);
 }
 
 void
