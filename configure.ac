@@ -61,6 +61,7 @@ m4_define([champlain_minimum_version], [0.12])
 m4_define([clutter_gtk_minimum_version], [0.90])
 m4_define([geoclue_minimum_version], [0.12.0])
 m4_define([gladeui_minimum_version], [3.10.0])
+m4_define([gnome_autoar_minimum_version], [0.1])
 m4_define([gweather_minimum_version], [3.5.0])
 m4_define([libcanberra_gtk_minimum_version], [0.25])
 m4_define([libnotify_minimum_version], [0.7])
@@ -287,8 +288,7 @@ PKG_CHECK_MODULES([GNOME_PLATFORM],
 	 shared-mime-info >= shared_mime_info_minimum_version
 	 gnome-desktop-3.0 >= gnome_desktop_minimum_version
 	 gsettings-desktop-schemas >= gsettings_desktop_schemas_minimum_version
-	 webkitgtk-3.0 >= webkitgtk_minimum_version
-	 gnome-autoar])
+	 webkitgtk-3.0 >= webkitgtk_minimum_version])
 AC_SUBST(GNOME_PLATFORM_CFLAGS)
 AC_SUBST(GNOME_PLATFORM_LIBS)
 
@@ -326,6 +326,32 @@ if test $enable_canberra = yes; then
 fi
 AC_SUBST(CANBERRA_CFLAGS)
 AC_SUBST(CANBERRA_LIBS)
+
+dnl ***********************************
+dnl Archives Integration / gnome-autoar
+dnl ***********************************
+AC_ARG_ENABLE([autoar],
+	[AS_HELP_STRING([--enable-autoar],
+	[Enable archives support in attachments @<:@default=yes@:>@])],
+	[enable_autoar="$enableval"], [enable_autoar=yes])
+
+if test x"$enable_autoar" = xyes; then
+	PKG_CHECK_MODULES(
+		[AUTOAR],
+		[gnome-autoar >= gnome_autoar_minimum_version],,
+		[AC_MSG_ERROR([
+
+	gnome-autoar not found (or version < gnome_autoar_minimum_version)
+
+	If you want to disable support for automatic archives handling,
+	please append --disable-autoar to configure.
+
+	])])
+
+	AC_DEFINE(HAVE_AUTOAR, 1, [Define if gnome-autoar is enabled])
+fi
+AC_SUBST(AUTOAR_CFLAGS)
+AC_SUBST(AUTOAR_LIBS)
 
 dnl ******************
 dnl User Documentation
@@ -1582,6 +1608,7 @@ fi
 echo "
 	LDAP support:		$msg_ldap
 	Contact Maps:		$enable_contact_maps
+	Archives support:       $enable_autoar
 	Libnotify:		$HAVE_LIBNOTIFY
 	Kerberos 5:		$msg_krb5
 	SSL support:		$msg_ssl

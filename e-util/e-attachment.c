@@ -28,7 +28,10 @@
 #include <errno.h>
 #include <glib/gi18n.h>
 #include <glib/gstdio.h>
+
+#ifdef HAVE_AUTOAR
 #include <gnome-autoar/autoar.h>
+#endif
 
 #include <libedataserver/libedataserver.h>
 
@@ -2071,6 +2074,7 @@ attachment_load_file_read_cb (GFile *file,
 		load_context);
 }
 
+#ifdef HAVE_AUTOAR
 static void
 attachment_load_created_decide_dest_cb (AutoarCreate *arcreate,
                                         GFile *destination,
@@ -2119,7 +2123,7 @@ attachment_load_created_error_cb (AutoarCreate *arcreate,
 	attachment_load_check_for_error (load_context, g_error_copy (error));
 	g_object_unref (arcreate);
 }
-
+#endif
 
 static void
 attachment_load_query_info_cb (GFile *file,
@@ -2143,6 +2147,7 @@ attachment_load_query_info_cb (GFile *file,
 
 	load_context->total_num_bytes = g_file_info_get_size (file_info);
 
+#ifdef HAVE_AUTOAR
 	if (g_file_info_get_file_type (file_info) == G_FILE_TYPE_DIRECTORY) {
 		AutoarCreate *arcreate;
 		AutoarPref *arpref; /* Do not unref */
@@ -2165,11 +2170,14 @@ attachment_load_query_info_cb (GFile *file,
 
 		g_object_unref (temporary);
 	} else {
+#endif
 		g_file_read_async (
 			file, G_PRIORITY_DEFAULT,
 			cancellable, (GAsyncReadyCallback)
 			attachment_load_file_read_cb, load_context);
+#ifdef HAVE_AUTOAR
 	}
+#endif
 }
 
 #define ATTACHMENT_LOAD_CONTEXT "attachment-load-context-data"
@@ -3056,6 +3064,7 @@ attachment_save_read_cb (GInputStream *input_stream,
 		save_context);
 }
 
+#ifdef HAVE_AUTOAR
 static void
 attachment_save_extracted_progress_cb (AutoarExtract *arextract,
                                        gdouble fraction_size,
@@ -3093,6 +3102,7 @@ attachment_save_extracted_error_cb (AutoarExtract *arextract,
 	attachment_save_check_for_error (save_context, g_error_copy (error));
 	g_object_unref (arextract);
 }
+#endif
 
 static void
 attachment_save_got_output_stream (SaveContext *save_context)
@@ -3141,6 +3151,7 @@ attachment_save_got_output_stream (SaveContext *save_context)
 			save_context);
 	}
 
+#ifdef HAVE_AUTOAR
 	if (attachment->priv->save_extracted) {
 		GSettings *settings;
 		AutoarPref *arpref;
@@ -3178,6 +3189,7 @@ attachment_save_got_output_stream (SaveContext *save_context)
 		 * reference count of arextract. We unref the object in
 		 * callbacks instead. */
 	}
+#endif
 
 	g_clear_object (&mime_part);
 }
@@ -3290,6 +3302,7 @@ attachment_save_query_info_cb (GFile *destination,
 			g_object_unref (destination);
 		}
 
+#ifdef HAVE_AUTOAR
 		if (attachment->priv->save_extracted) {
 			EAttachment *attachment;
 			GFileInfo *info;
@@ -3311,7 +3324,7 @@ attachment_save_query_info_cb (GFile *destination,
 				attachment_save_got_output_stream (save_context);
 			g_mutex_unlock (&(save_context->prepared_tasks_mutex));
 		}
-
+#endif
 		return;
 	}
 
@@ -3325,6 +3338,7 @@ replace:
 			save_context);
 	}
 
+#ifdef HAVE_AUTOAR
 	if (attachment->priv->save_extracted) {
 		/* We can safely use save_context->directory here because
 		 * attachment_save_replace_cb never calls
@@ -3342,6 +3356,7 @@ replace:
 			attachment_save_got_output_stream (save_context);
 		g_mutex_unlock (&(save_context->prepared_tasks_mutex));
 	}
+#endif
 }
 
 void
@@ -3390,8 +3405,10 @@ e_attachment_save_async (EAttachment *attachment,
 
 	if (attachment->priv->save_self)
 		save_context->total_tasks++;
+#ifdef HAVE_AUTOAR
 	if (attachment->priv->save_extracted)
 		save_context->total_tasks++;
+#endif
 
 	cancellable = attachment->priv->cancellable;
 	g_cancellable_reset (cancellable);

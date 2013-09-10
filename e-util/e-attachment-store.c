@@ -28,7 +28,10 @@
 
 #include <errno.h>
 #include <glib/gi18n.h>
+
+#ifdef HAVE_AUTOAR
 #include <gnome-autoar/autoar.h>
+#endif
 
 #include "e-mktemp.h"
 
@@ -444,7 +447,9 @@ update_preview_cb (GtkFileChooser *file_chooser,
 	g_object_unref (pixbuf);
 }
 
+#ifdef HAVE_AUTOAR
 #define LOAD_RESPONSE_ATTACH 1
+#endif
 
 void
 e_attachment_store_run_load_dialog (EAttachmentStore *store,
@@ -457,10 +462,12 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 	GtkWidget *extra_box_widget;
 	GtkWidget *option_display;
 
+#ifdef HAVE_AUTOAR
 	GtkBox *option_format_box;
 	GtkWidget *option_format_box_widget;
 	GtkWidget *option_format_label;
 	GtkWidget *option_format_combo;
+#endif
 
 	GtkImage *preview;
 
@@ -469,9 +476,11 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 	gboolean active;
 	gint response;
 
+#ifdef HAVE_AUTOAR
 	GSettings *settings;
 	AutoarPref *arpref;
 	int format, filter;
+#endif
 
 	g_return_if_fail (E_IS_ATTACHMENT_STORE (store));
 	g_return_if_fail (GTK_IS_WINDOW (parent));
@@ -479,14 +488,25 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 	dialog = gtk_file_chooser_dialog_new (
 		_("Add Attachment"), parent,
 		GTK_FILE_CHOOSER_ACTION_OPEN,
+#ifdef HAVE_AUTOAR
 		_("_Open"), GTK_RESPONSE_OK,
+#endif
 		_("_Cancel"), GTK_RESPONSE_CANCEL,
-		_("A_ttach"), LOAD_RESPONSE_ATTACH, NULL);
+#ifdef HAVE_AUTOAR
+		_("A_ttach"), LOAD_RESPONSE_ATTACH,
+#else
+		_("A_ttach"), GTK_RESPONSE_OK,
+#endif
+		NULL);
 
 	file_chooser = GTK_FILE_CHOOSER (dialog);
 	gtk_file_chooser_set_local_only (file_chooser, FALSE);
 	gtk_file_chooser_set_select_multiple (file_chooser, TRUE);
+#ifdef HAVE_AUTOAR
 	gtk_dialog_set_default_response (GTK_DIALOG (dialog), LOAD_RESPONSE_ATTACH);
+#else
+	gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+#endif
 	gtk_window_set_icon_name (GTK_WINDOW (dialog), "mail-attachment");
 
 	preview = GTK_IMAGE (gtk_image_new ());
@@ -504,6 +524,7 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 		_("_Suggest automatic display of attachment"));
 	gtk_box_pack_start (extra_box, option_display, FALSE, FALSE, 0);
 
+#ifdef HAVE_AUTOAR
 	option_format_box_widget = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	option_format_box = GTK_BOX (option_format_box_widget);
 	gtk_box_pack_start (extra_box, option_format_box_widget, FALSE, FALSE, 0);
@@ -518,22 +539,29 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 		autoar_pref_get_default_filter (arpref));
 	gtk_box_pack_start (option_format_box, option_format_label, FALSE, FALSE, 0);
 	gtk_box_pack_start (option_format_box, option_format_combo, FALSE, FALSE, 0);
+#endif
 
 	gtk_file_chooser_set_extra_widget (file_chooser, extra_box_widget);
 	gtk_widget_show_all (extra_box_widget);
 
 	response = gtk_dialog_run (GTK_DIALOG (dialog));
 
+#ifdef HAVE_AUTOAR
 	if (response != GTK_RESPONSE_OK && response != LOAD_RESPONSE_ATTACH)
+#else
+	if (response != GTK_RESPONSE_OK)
+#endif
 		goto exit;
 
 	files = gtk_file_chooser_get_files (file_chooser);
 	active = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (option_display));
 	disposition = active ? "inline" : "attachment";
 
+#ifdef HAVE_AUTOAR
 	autoar_gtk_format_filter_simple_get (option_format_combo, &format, &filter);
 	autoar_pref_set_default_format (arpref, format);
 	autoar_pref_set_default_filter (arpref, filter);
+#endif
 
 	for (iter = files; iter != NULL; iter = g_slist_next (iter)) {
 		EAttachment *attachment;
@@ -544,8 +572,10 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 		e_attachment_set_disposition (attachment, disposition);
 		e_attachment_store_add_attachment (store, attachment);
 
+#ifdef HAVE_AUTOAR
 		g_object_set_data_full (G_OBJECT (attachment),
 			"autoar-pref", g_object_ref (arpref), g_object_unref);
+#endif
 
 		e_attachment_load_async (
 			attachment, (GAsyncReadyCallback)
@@ -558,9 +588,10 @@ e_attachment_store_run_load_dialog (EAttachmentStore *store,
 
 exit:
 	gtk_widget_destroy (dialog);
+#ifdef HAVE_AUTOAR
 	g_object_unref (settings);
 	g_object_unref (arpref);
-
+#endif
 }
 
 GFile *
@@ -572,6 +603,7 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 	GtkFileChooserAction action;
 	GtkWidget *dialog;
 
+#ifdef HAVE_AUTOAR
 	GtkBox *extra_box;
 	GtkWidget *extra_box_widget;
 
@@ -584,6 +616,7 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 
 	GtkWidget *extract_yes;
 	GtkToggleButton *extract_yes_toggle;
+#endif
 
 	GFile *destination;
 	const gchar *title;
@@ -615,6 +648,7 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 	gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
 	gtk_window_set_icon_name (GTK_WINDOW (dialog), "mail-attachment");
 
+#ifdef HAVE_AUTOAR
 	extra_box_widget = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	extra_box = GTK_BOX (extra_box_widget);
 
@@ -643,14 +677,18 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 
 	gtk_widget_show_all (extra_box_widget);
 	gtk_file_chooser_set_extra_widget (file_chooser, extra_box_widget);
+#endif
 
 	if (action == GTK_FILE_CHOOSER_ACTION_SAVE) {
 		EAttachment *attachment;
-		AutoarPref *arpref;
-		GSettings *settings;
 		GFileInfo *file_info;
 		const gchar *name = NULL;
+
+#ifdef HAVE_AUTOAR
+		AutoarPref *arpref;
+		GSettings *settings;
 		gchar *mime_type;
+#endif
 
 		attachment = attachment_list->data;
 		file_info = e_attachment_ref_file_info (attachment);
@@ -664,6 +702,7 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 
 		gtk_file_chooser_set_current_name (file_chooser, name);
 
+#ifdef HAVE_AUTOAR
 		mime_type = e_attachment_dup_mime_type (attachment);
 		settings = g_settings_new (AUTOAR_PREF_DEFAULT_GSCHEMA_ID);
 		arpref = autoar_pref_new_with_gsettings (settings);
@@ -672,18 +711,24 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 			gtk_toggle_button_set_active (extract_yes_toggle, FALSE);
 		}
 
-		g_clear_object (&file_info);
 		g_clear_object (&settings);
 		g_clear_object (&arpref);
 		g_free (mime_type);
+#endif
+
+		g_clear_object (&file_info);
 	}
 
 	response = gtk_dialog_run (GTK_DIALOG (dialog));
 
 	if (response == GTK_RESPONSE_OK) {
+#ifdef HAVE_AUTOAR
 		gboolean save_self, save_extracted;
+#endif
 
 		destination = gtk_file_chooser_get_file (file_chooser);
+
+#ifdef HAVE_AUTOAR
 		save_self = !gtk_toggle_button_get_active (extract_yes_toggle) ||
 			    !gtk_toggle_button_get_active (extract_only_toggle);
 		save_extracted = gtk_toggle_button_get_active (extract_yes_toggle);
@@ -727,6 +772,7 @@ e_attachment_store_run_save_dialog (EAttachmentStore *store,
 			g_object_unref (settings);
 			g_object_unref (arpref);
 		}
+#endif
 	} else {
 		destination = NULL;
 	}

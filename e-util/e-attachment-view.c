@@ -257,7 +257,6 @@ action_save_all_cb (GtkAction *action,
 	GList *list, *iter;
 	GFile *destination;
 	gpointer parent;
-	gboolean save_attachments, save_extracted_files;
 
 	store = e_attachment_view_get_store (view);
 
